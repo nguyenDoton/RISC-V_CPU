@@ -20,9 +20,38 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
+module basys3_top(
+    input  logic       CLK100MHZ, // The physical W5 pin
+    input  logic       btnC,      // The physical Reset Button
+    input  logic [0:0] sw,        // Switch 0 (Speed Control)
+    output logic [15:0] led       // The physical LEDs
+    );
+
+    // 1. Clock Divider (Slow down 100MHz to ~3Hz)
+    logic [25:0] counter;
+    logic        slow_clk;
+
+    always_ff @(posedge CLK100MHZ) begin
+        counter <= counter + 1;
+    end
+
+    // Switch 0 UP   = Fast Clock (Good for quick testing)
+    // Switch 0 DOWN = Human Speed (So you can watch the binary count)
+    assign slow_clk = counter[24];
+
+
+    cpu_top cpu (
+        .clk(slow_clk),    
+        .rst(btnC),        
+        .output_led(led)   
+    );
+
+endmodule
+
 module cpu_top(
     input clk,
-    input rst
+    input rst,
+    output [15:0] output_led
     );
     
     //Instruction mem
@@ -100,7 +129,7 @@ module cpu_top(
     control_unit ctrl_unit (
         .inst(inst),
         .zero(zero_flag),
-        .cmp_output(alu_result[0]), // Connect LSB of ALU to Control Unit for BLT/BGE
+        .result(alu_result), // Connect LSB of ALU to Control Unit for BLT/BGE
         .ctrl(ctrl_imm),
         .alu_op(alu_op),
         .mem_mode(mem_mode),
@@ -154,7 +183,8 @@ module cpu_top(
         .mem_mode(mem_mode),
         .addr(alu_result),   // Address comes from ALU
         .wr_data(rd_data2),  // Data to write comes from Reg2
-        .rd_data(mem_read_data)
+        .rd_data(mem_read_data),
+        .led_output(output_led)
     );
 
     // ==========================================
@@ -171,6 +201,7 @@ module cpu_top(
         endcase
     end
     
+    //assign output_led = result[15:0];
     
 endmodule
 
@@ -475,7 +506,15 @@ module inst_mem(
    input logic rst,
    output logic [31:0] inst
 );  //instruction memory
+
+   
    logic [31:0] prog_mem [0:255];
+   
+   initial begin
+       // This tells Vivado to load your hex code into the FPGA Block RAM
+       $readmemh("program1.mem", prog_mem); 
+   end
+   
    always_comb 
    begin
         inst = prog_mem[pc[31:2]];
@@ -489,15 +528,22 @@ module data_mem(
    input logic clk,
    input logic [2:0] mem_mode,
    input logic wr_data_en,
-   output logic [31:0] rd_data
+   output logic [31:0] rd_data,
+   output logic [15:0] led_output
 );
 
    logic [31:0] data_memory [0:255];
+   logic [15:0] mmio_led_reg;
+   assign led_output = mmio_led_reg;
    
    
    always_ff@(posedge clk) begin
           //Write data
           if(wr_data_en) begin
+          if (addr == 32'h0000_8000 ) begin
+                mmio_led_reg <= wr_data[15:0];
+          end
+          else begin
           case (mem_mode) 
           3'b000: 
           case(addr[1:0])  //sb
@@ -520,11 +566,13 @@ module data_mem(
           endcase
           end
           end
+          end
           
     logic [31:0] temp_data; 
-    assign temp_data = data_memory[addr[31:2]]; //Load data
-    
-    always_comb  begin           //Load data
+//    assign temp_data = data_memory[addr[31:2]]; //Load data
+    assign temp_data = (addr == 32'h0000_8000) ? {16'b0, mmio_led_reg} : data_memory[addr[31:2]];
+    always_comb  begin     
+       rd_data = 32'b0;      //Load data
        case(mem_mode)
           3'b000: //lb
           case(addr[1:0])
